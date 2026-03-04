@@ -15,13 +15,10 @@ from DataLoader import *
 import os
 import warnings
 
-# 忽略警告
-warnings.filterwarnings("ignore")
 
 
-# ==========================================
-# 0. 全局随机种子设置 & 基础工具
-# ==========================================
+
+
 def setup_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -37,7 +34,7 @@ figure_name = ["Total", "BP", "ICache", "IFU", "RNU", "LSU", "DCache", "Regfile"
 
 
 def draw_figure(gt, pd, name):
-    # 过滤掉极端的异常值以便绘图
+
     mask = pd < np.max(gt) * 10
     gt_plot = gt[mask]
     pd_plot = pd[mask]
@@ -70,10 +67,8 @@ def draw_figure(gt, pd, name):
     plt.xticks(fontsize=20)
     plt.yticks(fontsize=20)
 
-    # 计算指标时，使用微小的 epsilon 防止除零
     pd_fixed = np.maximum(pd, 1e-6)
 
-    # 防止标准差为0导致的 R 计算错误
     if np.std(gt) > 1e-9 and np.std(pd) > 1e-9:
         r_report = np.corrcoef(gt, pd)[1][0]
     else:
@@ -125,9 +120,7 @@ def generate_training_test(feature, label_total, training_index, testing_index):
     return feature[training_set], label_total[training_set], feature[testing_set], label_total[testing_set]
 
 
-# ==========================================
-# 2. 物理先验
-# ==========================================
+
 logic_bias = 0
 dtlb_bias = 0
 
@@ -202,11 +195,7 @@ def decode_arch_knowledge(component_name, feature, pred):
     return pred
 
 
-# ==========================================
-# 3. 高级 GAT 模型 + DANN 组件
-# ==========================================
 
-# 梯度反转层 (Gradient Reversal Layer)
 class ReverseLayerF(Function):
     @staticmethod
     def forward(ctx, x, alpha):
@@ -219,7 +208,7 @@ class ReverseLayerF(Function):
         return output, None
 
 
-# 域判别器
+
 class DANN_Discriminator(nn.Module):
     def __init__(self, input_dim):
         super(DANN_Discriminator, self).__init__()
@@ -274,7 +263,7 @@ class MultiHeadGATLayer(nn.Module):
 class EnhancedPANDA_GAT(nn.Module):
     def __init__(self, feature_dims, hidden_dim=32, num_heads=4, num_nodes=11):
         super(EnhancedPANDA_GAT, self).__init__()
-        # 对齐
+
         self.input_encoders = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(dim, hidden_dim),
@@ -282,12 +271,12 @@ class EnhancedPANDA_GAT(nn.Module):
                 nn.LeakyReLU(0.1)
             ) for dim in feature_dims
         ])
-        # 节点身份
+
         self.node_type_emb = nn.Embedding(num_nodes, hidden_dim)
-        # GAT
+
         self.gat1 = MultiHeadGATLayer(hidden_dim, hidden_dim, num_heads=num_heads, concat=True)
         self.gat2 = MultiHeadGATLayer(hidden_dim * num_heads, hidden_dim, num_heads=num_heads, concat=False)
-        # 显式预测头
+
         self.output_layers = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_dim, 16),
@@ -327,20 +316,13 @@ def get_cpu_adj(num_nodes):
     return adj
 
 
-# ==========================================
-# 4. 训练流程 (DANN Enabled + Log Transform)
-# ==========================================
+
 
 def train_gat_pretraining(tr_feature, tr_label, te_feature, epochs=1000, lr=0.002):
-    """
-    修改后的训练流程：
-    1. 输入包括 Train (Source) 和 Test (Target) 的特征
-    2. 使用 Log(1+y) 变换 Label
-    3. 加入 DANN Loss
-    """
+
     feats_np_s, dims, scalers, lbl_enc = [], [], [], np.zeros((tr_label.shape[0], 11))
 
-    # 1. 预处理 Source Data
+
     for i, c in enumerate(comp):
         s, e = feature_of_components[c]
         raw = tr_feature[:, s:e]
@@ -350,18 +332,16 @@ def train_gat_pretraining(tr_feature, tr_label, te_feature, epochs=1000, lr=0.00
         dims.append(e - s)
         lbl_enc[:, i] = encode_arch_knowledge(c, raw, tr_label[:, i + 1], True)
 
-    # 2. 预处理 Target Data (使用 Source 的 Scaler)
     feats_np_t = []
     for i, c in enumerate(comp):
         s, e = feature_of_components[c]
         raw = te_feature[:, s:e]
         feats_np_t.append(scalers[i].transform(raw))
 
-    # 3. Log 变换 Label (关键：解决 MAPE 爆炸)
-    # 使用 log1p (log(1+x)) 来压缩数值范围
+
     lbl_enc_log = np.log1p(lbl_enc)
 
-    tgt_scaler = SklearnScaler()  # 对 Log 后的值再做一次 Scaling 确保梯度稳定
+    tgt_scaler = SklearnScaler()  
     y_log_scaled = torch.FloatTensor(tgt_scaler.fit_transform(lbl_enc_log))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -369,8 +349,8 @@ def train_gat_pretraining(tr_feature, tr_label, te_feature, epochs=1000, lr=0.00
     discriminator = DANN_Discriminator(input_dim=32).to(device)  # 每个节点 Embedding dim=32
 
     opt = optim.Adam(list(model.parameters()) + list(discriminator.parameters()), lr=lr, weight_decay=1e-4)
-    loss_reg_fn = nn.MSELoss()  # 回归用 MSE (在 Log 空间)
-    loss_dom_fn = nn.BCELoss()  # 域分类用 BCE
+    loss_reg_fn = nn.MSELoss() 
+    loss_dom_fn = nn.BCELoss() 
 
     adj = get_cpu_adj(len(comp)).to(device)
     feats_s = [torch.FloatTensor(f).to(device) for f in feats_np_s]
@@ -383,24 +363,20 @@ def train_gat_pretraining(tr_feature, tr_label, te_feature, epochs=1000, lr=0.00
     min_len = min(feats_s[0].shape[0], feats_t[0].shape[0])
 
     for epoch in range(epochs):
-        # 动态 Lambda 调度
+
         p = float(epoch) / epochs
         alpha = 2. / (1. + np.exp(-10 * p)) - 1
 
         opt.zero_grad()
 
-        # --- Source Domain Forward ---
-        # 截断到相同长度进行 Batch 处理 (简单起见)
-        # 实际可用 DataLoader 改进
+
         s_emb, s_pred = model.get_embeddings_and_pred([f[:min_len] for f in feats_s], adj)
         t_emb, _ = model.get_embeddings_and_pred([f[:min_len] for f in feats_t], adj)
 
-        # 1. Regression Loss (只在 Source 上计算)
+
         loss_reg = loss_reg_fn(s_pred.squeeze(-1), y[:min_len])
 
-        # 2. Domain Loss (Source vs Target)
-        # 将 Embedding 展平或取平均用于判别? 这里对每个节点都做判别
-        # s_emb: [B, 11, 32] -> view -> [B*11, 32]
+
         s_dom_out = discriminator(s_emb.view(-1, 32), alpha)
         t_dom_out = discriminator(t_emb.view(-1, 32), alpha)
 
@@ -409,11 +385,9 @@ def train_gat_pretraining(tr_feature, tr_label, te_feature, epochs=1000, lr=0.00
 
         loss_dom = loss_dom_fn(s_dom_out, s_target) + loss_dom_fn(t_dom_out, t_target)
 
-        # 总 Loss
-        loss = loss_reg + 0.1 * loss_dom  # 可以调节 domain loss 的权重
-
+        loss = loss_reg + 0.1 * loss_dom  
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # 梯度裁剪
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  
         opt.step()
 
         if epoch % 200 == 0:
@@ -435,9 +409,9 @@ def train_xgb_hybrid(gnn_model, feature, label, scalers, tgt_scaler, current_see
         emb, pred = gnn_model.get_embeddings_and_pred(feats_t, adj)
         emb = emb.cpu().numpy()
         pred = pred.squeeze(2).cpu().numpy()
-        # 注意：这里的 pred 还是 Scaled Log 空间的值
+       
 
-    # PCA 降维 Embedding
+
     pcas = []
     emb_reduced_list = []
     for i in range(len(comp)):
@@ -452,13 +426,12 @@ def train_xgb_hybrid(gnn_model, feature, label, scalers, tgt_scaler, current_see
         s, e = feature_of_components[c]
         raw = feature[:, s:e]
 
-        # 输入特征
-        gnn_feat = emb_reduced_list[i]
-        gnn_val = pred[:, i:i + 1]  # 使用 GNN 的 Log 预测值作为特征
 
+        gnn_feat = emb_reduced_list[i]
+        gnn_val = pred[:, i:i + 1] 
         X = np.hstack([raw, gnn_feat, gnn_val])
 
-        # 目标值：使用 Log1p 变换后的值训练 XGBoost
+       
         y_phys = encode_arch_knowledge(c, raw, label[:, i + 1], True)
         y_log = np.log1p(y_phys)
 
@@ -501,13 +474,12 @@ def test_hybrid(gnn_model, models, pcas, feature, label, scalers, tgt_scaler):
         gnn_val = pred[:, i:i + 1]
         X = np.hstack([raw, gnn_feat, gnn_val])
 
-        # 1. 预测 Log 值
+
         p_log = models[i].predict(X)
 
-        # 2. 还原：Expm1
+
         p_phys = np.expm1(p_log)
 
-        # 3. 物理约束
         p_phys = np.maximum(p_phys, 0)
 
         preds.append(decode_arch_knowledge(c, raw, p_phys))
@@ -516,9 +488,7 @@ def test_hybrid(gnn_model, models, pcas, feature, label, scalers, tgt_scaler):
     return np.hstack([np.sum(res, axis=1, keepdims=True), res])
 
 
-# ==========================================
-# 5. Ensemble 主流程
-# ==========================================
+
 def run_ensemble(tr_idx, te_idx, uarch, name, seeds=[42, 2024, 0, 123, 999]):
     global logic_bias, dtlb_bias
     logic_bias = dtlb_bias = 0
@@ -534,14 +504,12 @@ def run_ensemble(tr_idx, te_idx, uarch, name, seeds=[42, 2024, 0, 123, 999]):
         print(f"   [Run {i + 1}/{len(seeds)}] Seed={seed} ...")
         setup_seed(seed)
 
-        # 1. 训练 GAT (提取特征)
-        # 关键修改：传入 te_x 作为 Target Domain 数据用于 DANN 对齐
+
         gnn, scalers, tgt_scaler = train_gat_pretraining(tr_x, tr_y, te_x, epochs=1200, lr=0.002)
 
-        # 2. 训练 XGBoost (混合输入)
         xgbs, pcas = train_xgb_hybrid(gnn, tr_x, tr_y, scalers, tgt_scaler, current_seed=seed)
 
-        # 3. 预测
+
         pred = test_hybrid(gnn, xgbs, pcas, te_x, te_y, scalers, tgt_scaler)
         ensemble_preds.append(pred)
 
